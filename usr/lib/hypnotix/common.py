@@ -61,13 +61,18 @@ class Provider():
         return "%s:::%s:::%s:::%s:::%s:::%s" % (self.name, self.type_id, self.url, self.username, self.password, self.epg)
 
 class Group():
-    def __init__(self, name):
-        if "VOD" in name.split():
+    def __init__(self, name, url):
+        if "movie" in url.split("/"):
             self.group_type = MOVIES_GROUP
-        elif "SERIES" in name.split():
+        elif "series" in url.split("/"):
             self.group_type = SERIES_GROUP
         else:
-            self.group_type = TV_GROUP
+            if "VOD" in name.split():
+                self.group_type = MOVIES_GROUP
+            elif "SERIES" in name.split():
+                self.group_type = SERIES_GROUP
+            else:
+                self.group_type = TV_GROUP
         self.name = name
         self.channels = []
         self.series = []
@@ -230,7 +235,7 @@ class Manager():
                             if channel.group_title in groups.keys():
                                 group = groups[channel.group_title]
                             else:
-                                group = Group(channel.group_title)
+                                group = Group(channel.group_title, channel.url)
                                 provider.groups.append(group)
                                 groups[channel.group_title] = group
                         if serie != None and serie not in group.series:
