@@ -27,6 +27,8 @@ from imdb import IMDb
 
 from functools import partial
 
+from unidecode import unidecode
+
 setproctitle.setproctitle("hypnotix")
 
 # i18n
@@ -132,8 +134,8 @@ class MainWindow():
 
         # Create variables to quickly access dynamic widgets
         self.generic_channel_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size("/usr/share/hypnotix/generic_tv_logo.png", 22, 22)
-        widget_names = ["headerbar", "status_label", "status_bar", "sidebar", "go_back_button", "channels_box", \
-            "provider_button", "preferences_button", \
+        widget_names = ["headerbar", "status_label", "status_bar", "sidebar", "go_back_button", "search_button", "search_bar", \
+            "channels_box", "provider_button", "preferences_button", \
             "mpv_drawing_area", "stack", "fullscreen_button", \
             "provider_ok_button", "provider_cancel_button", \
             "name_entry", "path_label", "path_entry", "browse_button", "url_label", "url_entry", \
@@ -151,6 +153,7 @@ class MainWindow():
             "info_section", "info_revealer", "info_name_label", "info_plot_label", "info_rating_label", "info_year_label", "close_info_button", \
             "info_genre_label", "info_duration_label", "info_votes_label", "info_pg_label", "divider_label", \
             "useragent_entry", "referer_entry", "mpv_entry", "mpv_link", \
+            "darkmode_switch",
             "mpv_stack", "spinner", "info_window_close_button", \
             "video_properties_box", "video_properties_label", \
             "colour_properties_box", "colour_properties_label", \
@@ -188,6 +191,9 @@ class MainWindow():
         self.series_button.connect("clicked", self.show_groups, SERIES_GROUP)
         self.go_back_button.connect("clicked", self.on_go_back_button)
 
+        self.search_button.connect("clicked", self.on_search_button)
+        self.search_bar.connect("activate", self.on_search_button)
+
         self.stop_button.connect("clicked", self.on_stop_button)
         self.pause_button.connect("clicked", self.on_pause_button)
         self.show_button.connect("clicked", self.on_show_button)
@@ -213,6 +219,12 @@ class MainWindow():
         self.bind_setting_widget("user-agent", self.useragent_entry)
         self.bind_setting_widget("http-referer", self.referer_entry)
         self.bind_setting_widget("mpv-options", self.mpv_entry)
+
+        #dark mode
+        prefer_dark_mode = self.settings.get_boolean("prefer-dark-mode")
+        Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", prefer_dark_mode)
+        self.darkmode_switch.set_active(prefer_dark_mode)
+        self.darkmode_switch.connect("notify::active", self.on_darkmode_switch_toggled)
 
         # Menubar
         accel_group = Gtk.AccelGroup()
@@ -280,6 +292,22 @@ class MainWindow():
         self.video_bitrates = []
         self.audio_bitrates = []
 
+    def add_badge(self, word, box, added_words):
+        if word not in added_words:
+            for extension in ["svg", "png"]:
+                badge = "/usr/share/hypnotix/pictures/badges/%s.%s" % (word, extension)
+                if os.path.exists(badge):
+                    try:
+                        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(badge, -1, 16)
+                        surface = Gdk.cairo_surface_create_from_pixbuf(pixbuf, self.window.get_scale_factor())
+                        image = Gtk.Image().new_from_surface(surface)
+                        box.pack_start(image, False, False, 0)
+                        added_words.append(word)
+                        break
+                    except Exception as e:
+                        print("Could not load badge", badge)
+                        print(e)
+
     def show_groups(self, widget, content_type):
         self.content_type = content_type
         self.navigate_to("categories_page")
@@ -301,27 +329,12 @@ class MainWindow():
             else:
                 label.set_text("%s (%d)" % (self.remove_word("SERIES", group.name), len(group.series)))
             box = Gtk.Box()
-            for word in group.name.split():
-                word = word.lower()
-                badge = "/usr/share/hypnotix/pictures/badges/%s.png" % word
-                if os.path.exists(badge):
-                    try:
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(badge, -1, 16)
-                        surface = Gdk.cairo_surface_create_from_pixbuf(pixbuf, self.window.get_scale_factor())
-                        image = Gtk.Image().new_from_surface(surface)
-                        box.pack_start(image, False, False, 0)
-                    except:
-                        print("Could not load badge", badge)
-                elif word in BADGES.keys():
-                    badge = "/usr/share/hypnotix/pictures/badges/%s.png" % BADGES[word]
-                    try:
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(badge, -1, 16)
-                        surface = Gdk.cairo_surface_create_from_pixbuf(pixbuf, self.window.get_scale_factor())
-                        image = Gtk.Image().new_from_surface(surface)
-                        box.pack_start(image, False, False, 0)
-                    except:
-                        print("Could not load badge", badge)
-
+            name = group.name.lower().replace("(", " ").replace(")", " ")
+            added_words = []
+            for word in name.split():
+                self.add_badge(word, box, added_words)
+                if word in BADGES.keys():
+                    self.add_badge(BADGES[word], box, added_words)
             box.pack_start(label, False, False, 0)
             box.set_spacing(6)
             button.add(box)
@@ -349,14 +362,21 @@ class MainWindow():
             else:
                 self.show_vod(self.active_provider.series)
 
-    def show_channels(self, channels):
-        self.navigate_to("channels_page")
+    def show_channels(self, channels, search=False):
+        self.navigate_to("channels_page", '', search)
         if self.content_type == TV_GROUP:
             self.sidebar.show()
             logos_to_refresh = []
             for child in self.channels_flowbox.get_children():
                 self.channels_flowbox.remove(child)
+
+            if search:
+                search_bar_text = unidecode(self.search_bar.get_text()).lower().strip()
+
             for channel in channels:
+                if search:
+                    if search_bar_text not in unidecode(channel.name).lower():
+                        continue
                 button = Gtk.Button()
                 button.connect("clicked", self.on_channel_button_clicked, channel)
                 label = Gtk.Label()
@@ -473,6 +493,11 @@ class MainWindow():
     def on_entry_changed(self, widget, key):
         self.settings.set_string(key, widget.get_text())
 
+    def on_darkmode_switch_toggled(self, widget, key):
+        prefer_dark_mode = widget.get_active()
+        self.settings.set_boolean("prefer-dark-mode", prefer_dark_mode)
+        Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", prefer_dark_mode)
+
     @async_function
     def download_channel_logos(self, logos_to_refresh):
         headers = {
@@ -515,9 +540,14 @@ class MainWindow():
         if self.active_channel != None:
             self.playback_bar.show()
 
+    def on_search_button(self, widget):
+        if self.search_bar.get_text().strip() != "":
+            self.show_channels(self.active_provider.channels, True)
+
     @idle_function
-    def navigate_to(self, page, name=""):
+    def navigate_to(self, page, name="", search=False):
         self.go_back_button.show()
+        self.search_button.show()
         self.fullscreen_button.hide()
         self.stack.set_visible_child_name(page)
         provider = self.active_provider
@@ -613,6 +643,9 @@ class MainWindow():
             self.headerbar.set_title("Hypnotix")
             self.headerbar.set_subtitle(_("Reset providers"))
 
+        if search:
+            self.headerbar.set_subtitle(_("Search > %s" % self.search_bar.get_text().strip()))
+
     def open_keyboard_shortcuts(self, widget):
         gladefile = "/usr/share/hypnotix/shortcuts.ui"
         builder = Gtk.Builder()
@@ -649,12 +682,12 @@ class MainWindow():
     def before_play(self, channel):
         self.mpv_stack.set_visible_child_name("spinner_page")
         self.video_properties.clear()
-        self.video_properties[_("general")] = {}
-        self.video_properties[_("colour")] = {}
+        self.video_properties[_("General")] = {}
+        self.video_properties[_("Color")] = {}
 
         self.audio_properties.clear()
-        self.audio_properties[_("general")] = {}
-        self.audio_properties[_("layout")] = {}
+        self.audio_properties[_("General")] = {}
+        self.audio_properties[_("Layout")] = {}
 
         self.video_bitrates.clear()
         self.audio_bitrates.clear()
@@ -705,31 +738,31 @@ class MainWindow():
         br = sum(rates[rate]) / float(len(rates[rate]))
 
         if rate == "video":
-            self.video_properties[_("general")][_("Average Bitrate")] = "%.f Kbps" % br
+            self.video_properties[_("General")][_("Average Bitrate")] = "%.f Kbps" % br
         else:
-            self.audio_properties[_("general")][_("Average Bitrate")] = "%.f Kbps" % br
+            self.audio_properties[_("General")][_("Average Bitrate")] = "%.f Kbps" % br
 
     @idle_function
     def on_video_params(self, property, params):
         if not params or not type(params) == dict:
             return
         if "w" in params and "h" in params:
-            self.video_properties[_("general")][_("Dimensions")] = "%sx%s" % (params["w"],params["h"])
+            self.video_properties[_("General")][_("Dimensions")] = "%sx%s" % (params["w"],params["h"])
         if "aspect" in params:
             aspect = round(float(params["aspect"]), 2)
-            self.video_properties[_("general")][_("Aspect")] = "%s" % aspect
+            self.video_properties[_("General")][_("Aspect")] = "%s" % aspect
         if "pixelformat" in params:
-            self.video_properties[_("colour")][_("Pixel Format")] = params["pixelformat"]
+            self.video_properties[_("Color")][_("Pixel Format")] = params["pixelformat"]
         if "gamma" in params:
-            self.video_properties[_("colour")][_("Gamma")] = params["gamma"]
+            self.video_properties[_("Color")][_("Gamma")] = params["gamma"]
         if "average-bpp" in params:
-            self.video_properties[_("colour")][_("Bits Per Pixel")] = params["average-bpp"]
+            self.video_properties[_("Color")][_("Bits Per Pixel")] = params["average-bpp"]
 
     @idle_function
     def on_video_format(self, property, vformat):
         if not vformat:
             return
-        self.video_properties[_("general")][_("Codec")] = vformat
+        self.video_properties[_("General")][_("Codec")] = vformat
 
     @idle_function
     def on_audio_params(self, property, params):
@@ -739,23 +772,23 @@ class MainWindow():
             chans = params["channels"]
             if "5.1" in chans or "7.1" in chans:
                 chans += " " + _("surround sound")
-            self.audio_properties[_("layout")][_("Channels")] = chans
+            self.audio_properties[_("Layout")][_("Channels")] = chans
         if "samplerate" in params:
             sr = float(params["samplerate"]) / 1000.0
-            self.audio_properties[_("general")][_("Sample Rate")] = "%.1f KHz" % sr
+            self.audio_properties[_("General")][_("Sample Rate")] = "%.1f KHz" % sr
         if "format" in params:
             fmt = params["format"]
             if fmt in AUDIO_SAMPLE_FORMATS:
                 fmt = AUDIO_SAMPLE_FORMATS[fmt]
-            self.audio_properties[_("general")][_("Format")] = fmt
+            self.audio_properties[_("General")][_("Format")] = fmt
         if "channel-count" in params:
-            self.audio_properties[_("layout")][_("Channel Count")] = params["channel-count"]
+            self.audio_properties[_("Layout")][_("Channel Count")] = params["channel-count"]
 
     @idle_function
     def on_audio_codec(self, property, codec):
         if not codec:
             return
-        self.audio_properties[_("general")][_("Codec")] = codec.split()[0]
+        self.audio_properties[_("General")][_("Codec")] = codec.split()[0]
 
     @async_function
     def get_imdb_details(self, name):
@@ -1088,10 +1121,10 @@ class MainWindow():
             for child in section.get_children():
                 section.remove(child)
 
-        props = [self.video_properties[_("general")], \
-            self.video_properties[_("colour")], \
-            self.audio_properties[_("general")], \
-            self.audio_properties[_("layout")]]
+        props = [self.video_properties[_("General")], \
+            self.video_properties[_("Color")], \
+            self.audio_properties[_("General")], \
+            self.audio_properties[_("Layout")]]
 
         for section, props in zip(sections, props):
             for prop_k, prop_v in props.items():
@@ -1115,11 +1148,11 @@ class MainWindow():
                         label.set_text(properties[_("Average Bitrate")])
                     return True
 
-                if prop_k == _("Average Bitrate") and props == self.video_properties[_("general")]:
+                if prop_k == _("Average Bitrate") and props == self.video_properties[_("General")]:
                     cb = partial(update_bitrate, v, props)
                     GLib.timeout_add_seconds(UPDATE_BR_INTERVAL, cb)
 
-                elif prop_k == _("Average Bitrate") and props == self.audio_properties[_("general")]:
+                elif prop_k == _("Average Bitrate") and props == self.audio_properties[_("General")]:
                     cb = partial(update_bitrate, v, props)
                     GLib.timeout_add_seconds(UPDATE_BR_INTERVAL, cb)
 
@@ -1167,7 +1200,7 @@ class MainWindow():
         if ctrl and event.keyval == Gdk.KEY_r:
             self.reload(page=None, refresh=True)
         elif event.keyval == Gdk.KEY_F11 or \
-             event.keyval == Gdk.KEY_f or \
+             (event.keyval == Gdk.KEY_f and type(widget.get_focus()) != gi.repository.Gtk.SearchEntry) or \
              (self.fullscreen and event.keyval == Gdk.KEY_Escape):
             self.toggle_fullscreen()
 
